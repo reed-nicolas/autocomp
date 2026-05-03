@@ -1007,6 +1007,14 @@ print("{COMBINED_RESULTS_MARKER}" + json.dumps(_all_results))
         temp_dir = pathlib.Path(__file__).parent / "tmp_files" / "trn_eval" / timestamp
         temp_dir.mkdir(parents=True, exist_ok=True)
 
+        if prob.prob_type == "trn-advanced-nki1" and prob.prob_id == 99:
+            from autocomp.backend.trn.lab_conv2d_eval import evaluate_lab_conv2d
+            num_cores = self._detect_num_cores()
+            parallelism = min(num_cores, max(1, len(code_strs)))
+            return evaluate_lab_conv2d(
+                code_strs, temp_dir, parallelism=parallelism,
+            )
+
         if prob.test_file:
             test_file = prob.test_file
         else:
