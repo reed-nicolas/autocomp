@@ -15,6 +15,22 @@ from anthropic import AsyncAnthropic
 from together import Together, AsyncTogether
 
 from autocomp.common import logger
+from autocomp.common.claude_code_backend import (
+    ClaudeCodeBackend,
+    ClaudeCodeAuthError,
+    ClaudeCodeError,
+)
+
+
+_CLAUDE_CODE_MODEL_ALIASES = {
+    "opus": "claude-opus-4-7",
+    "sonnet": "claude-sonnet-4-6",
+    "haiku": "claude-haiku-4-5",
+}
+
+
+def _resolve_claude_code_model(model: str) -> str:
+    return _CLAUDE_CODE_MODEL_ALIASES.get(model, model)
 
 # Context variable for tagging LLM calls by phase (e.g. "plan_generation")
 llm_phase: contextvars.ContextVar[str] = contextvars.ContextVar("llm_phase", default="unknown")
@@ -499,6 +515,68 @@ async def fetch_tool_completion(
 
     Returns a normalized dict: {"role": "assistant", "content": ..., "tool_calls": [...], "usage": {...}}.
     """
+    if provider == "claude-code":
+        if tools:
+            raise NotImplementedError(
+                "claude-code provider does not support tool-calling. "
+                "web_search() and agent_loop() require a tool-capable provider "
+                "(openai, anthropic, gcp, aws). Use claude-code only for plain "
+                "chat / chat_async / chat_messages_async without tools."
+            )
+        if response_format is not None:
+            raise NotImplementedError(
+                "claude-code provider does not support response_format / structured output. "
+                "The edits pipeline (use_edits=True) cannot use claude-code; "
+                "set use_edits=False on BeamSearchStrategy when using claude-code."
+            )
+        backend: ClaudeCodeBackend = client
+        t0 = time.perf_counter()
+        async with semaphore:
+            try:
+                result = await backend.complete(messages)
+                content = result.content
+                est_in = sum(len(m.get("content", "") or "") for m in messages) // 4
+                est_out = max(1, len(content) // 4)
+                return {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": est_in,
+                        "output_tokens": est_out,
+                        "duration_s": round(time.perf_counter() - t0, 3),
+                        "model": model,
+                        "phase": llm_phase.get("unknown"),
+                        "source": "estimated",
+                    },
+                }
+            except ClaudeCodeAuthError as e:
+                logger.error(f"claude-code auth failure: {e}")
+                return {
+                    "role": "assistant",
+                    "content": f"Error: claude auth failure: {e}",
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": 0, "output_tokens": 0,
+                        "duration_s": round(time.perf_counter() - t0, 3),
+                        "model": model, "phase": llm_phase.get("unknown"),
+                        "source": "estimated",
+                    },
+                }
+            except ClaudeCodeError as e:
+                logger.error(f"claude-code error after retries: {e}")
+                return {
+                    "role": "assistant",
+                    "content": f"Error: claude failure after retries: {e}",
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": 0, "output_tokens": 0,
+                        "duration_s": round(time.perf_counter() - t0, 3),
+                        "model": model, "phase": llm_phase.get("unknown"),
+                        "source": "estimated",
+                    },
+                }
+
     max_retries = 8
     for attempt in range(max_retries):
         try:
@@ -744,7 +822,10 @@ class LLMClient:
 
         self.provider = provider
         if self.provider is None:
-            if "gpt" in model and "gpt-oss" not in model:
+            if model.startswith("claude-code::"):
+                self.provider = "claude-code"
+                self.model = model.split("::", 1)[1]
+            elif "gpt" in model and "gpt-oss" not in model:
                 self.provider = "openai"
             elif len(model) >= 2 and model[0] == "o" and model[1].isdigit():
                 self.provider = "openai"
@@ -810,6 +891,10 @@ class LLMClient:
                 api_key=openai_api_key,
                 base_url=openai_api_base,
             )
+        elif self.provider == "claude-code":
+            self.model = _resolve_claude_code_model(self.model)
+            self.async_client = ClaudeCodeBackend(model=self.model)
+            self.client = self.async_client
         elif self.provider == "dummy":
             pass
         else:

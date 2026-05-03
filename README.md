@@ -142,6 +142,7 @@ API keys can be configured via environment variables or in `autocomp/common/keys
 | AWS Bedrock | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | `aws`
 | Google Cloud (Vertex AI) | `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_PROJECT` | `gcp`
 | Google AI Studio | `GOOGLE_API_KEY` | `gcp`
+| Claude Code CLI (subscription) | none — uses your local `claude` install | `claude-code`
 
 **Example `autocomp/common/keys.py`:**
 
@@ -178,6 +179,33 @@ models = [
 ```
 
 By default the `us-west-2` region is used. Set the `AWS_REGION` environment variable (or add it to `keys.py`) to override.
+
+#### Claude Code CLI (subscription)
+
+If you have [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) installed (`claude --version` works), you can drive autocomp through your subscription instead of API credits:
+
+```python
+plan_models = ["claude-code::opus"]
+code_models = ["claude-code::sonnet"]
+```
+
+`claude-code::opus`, `claude-code::sonnet`, and `claude-code::haiku` resolve to the latest Opus / Sonnet / Haiku aliases the CLI accepts. Pass any other id verbatim (`claude-code::claude-sonnet-4-6`).
+
+**Limitations.** The provider drives `claude --print` via subprocess and only supports plain chat completions:
+
+- `BeamSearchStrategy(use_edits=True)` requires structured output and is **not** supported — keep `use_edits=False`.
+- `LLMClient.web_search()` and `LLMClient.agent_loop()` require tool-calling and are **not** supported. Both raise `NotImplementedError` with a message naming the offending entry point.
+- Each LLM call spawns one `claude --print` subprocess; concurrent calls are bounded per `LLMClient` by `AUTOCOMP_CLAUDE_MAX_CONCURRENT` (default 8). Lower this if your subscription tier rate-limits aggressively.
+
+**Configuration knobs (env vars):**
+
+- `CLAUDE_BINARY` — absolute path to the `claude` binary if it is not on `PATH`.
+- `CLAUDE_CONFIG_DIR` — point at a dedicated automation profile (e.g. `$HOME/.claude-automation`).
+- `AUTOCOMP_CLAUDE_TIMEOUT` — per-call timeout in seconds (default 600).
+- `AUTOCOMP_CLAUDE_MAX_CONCURRENT` — per-instance subprocess cap (default 8).
+- `AUTOCOMP_CLAUDE_SKIP_PERMISSIONS=1` — opt in to `--dangerously-skip-permissions` (off by default).
+
+Token counts reported through `aggregate_usage` are estimated from text length and tagged `"source": "estimated"`; the CLI does not return real counts via `--print`.
 
 ## 🚀 Usage
 
